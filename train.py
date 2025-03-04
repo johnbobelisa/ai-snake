@@ -1,25 +1,12 @@
-"""
-Code for training a Snake bot using the NEAT algorithm.
-
-Major Fixes:
-  1. Slowed down training when watch=True by introducing a frame-rate limit 
-     inside play_ai().
-  2. Called game_instance.show_game_over() when watch=True so that the 
-     window remains visible long enough to see what happened at the end of each game.
-
-Use the --no-watch flag to disable visuals if you need faster training.
-"""
-
 import pickle
 import neat
 import numpy as np
 import argparse
 import pygame
-import game  # This imports your game.py module
+import game  # Imports your game.py module
 
 # Training configuration constants
 PLAYS_PER_BOT = 3         # Number of simulations per genome (averaged)
-VISION_BOX = 5            # 5x5 local grid (inputs: 5*5 - 1 + 4 = 28)
 MAX_STEPS = 500           # Maximum steps allowed per simulation
 MAX_NO_FOOD_STEPS = 100   # Maximum consecutive steps without eating
 
@@ -28,82 +15,79 @@ best_fitness = -float('inf')
 
 def bot_mover_maker(model):
     """
-    Given a NEAT model, returns a function that controls the snake's direction.
-    The returned function accepts the current snake and food objects.
+    Returns a function that controls the snake's direction based on the NEAT model.
     """
+    DIRECTIONS = [(0, -1), (1, 0), (0, 1), (-1, 0)]  # up, right, down, left
+    
     def bot_mover(snake, food):
         state = local_state(snake, food)
-        output = model.activate(state)
-        move_index = np.argmax(output)
-        # Map output index to a directional tuple:
-        # 0: up, 1: right, 2: down, 3: left.
-        if move_index == 0:
-            snake.change_direction((0, -1))
-        elif move_index == 1:
-            snake.change_direction((1, 0))
-        elif move_index == 2:
-            snake.change_direction((0, 1))
-        elif move_index == 3:
-            snake.change_direction((-1, 0))
+        output = model.activate(state)  # [turn_left, go_straight, turn_right]
+        action_index = np.argmax(output)
+        
+        current_index = DIRECTIONS.index(snake.direction)
+        if action_index == 0:  # turn_left
+            new_index = (current_index - 1) % 4
+        elif action_index == 1:  # go_straight
+            new_index = current_index
+        elif action_index == 2:  # turn_right
+            new_index = (current_index + 1) % 4
+        
+        snake.change_direction(DIRECTIONS[new_index])
+    
     return bot_mover
-
-def is_occupied(pos, snake):
-    """
-    Returns 1 if the grid cell 'pos' is occupied by the snake or is out-of-bounds;
-    otherwise returns 0.
-    """
-    if not (0 <= pos[0] < game.GRID_SIZE and 0 <= pos[1] < game.GRID_SIZE):
-        return 1
-    if pos in snake.body:
-        return 1
-    return 0
 
 def local_state(snake, food):
     """
-    Returns a flattened binary vector representing:
-      - The VISION_BOX x VISION_BOX local grid (excluding the head).
-      - Four booleans indicating if the food is above, below, left, or right of the head.
-      
-    Total inputs = (VISION_BOX^2 - 1) + 4.
+    Returns a 28-element state vector for the NEAT network using ray tracing:
+    - 8 directions * 3 sensors (wall, body, food) = 24 inputs
+    - 4 inputs for one-hot encoded heading = 4 inputs
     """
     state = []
     head = snake.body[0]
-    half = VISION_BOX // 2
-    for i in range(-half, half + 1):
-        for j in range(-half, half + 1):
-            if i == 0 and j == 0:
-                continue  # Skip the head cell
-            cell = (head[0] + j, head[1] + i)
-            state.append(is_occupied(cell, snake))
-    # Append directional booleans for the food position relative to the head.
-    state.extend([
-        1 if food.position[1] < head[1] else 0,  # food is up
-        1 if food.position[1] > head[1] else 0,  # food is down
-        1 if food.position[0] < head[0] else 0,  # food is left
-        1 if food.position[0] > head[0] else 0   # food is right
-    ])
+    snake_set = set(snake.body)  # O(1) lookups
+    
+    ray_directions = [
+        (0, -1), (1, -1), (1, 0), (1, 1),
+        (0, 1), (-1, 1), (-1, 0), (-1, -1)  # N, NE, E, SE, S, SW, W, NW
+    ]
+    
+    for dx, dy in ray_directions:
+        distance_to_wall = None
+        distance_to_snake_body = None
+        distance_to_food = None
+        
+        k = 1
+        while True:
+            pos = (head[0] + k * dx, head[1] + k * dy)
+            if not (0 <= pos[0] < game.GRID_SIZE and 0 <= pos[1] < game.GRID_SIZE):
+                distance_to_wall = k
+                break
+            if pos in snake_set and distance_to_snake_body is None:
+                distance_to_snake_body = k
+            if pos == food.position and distance_to_food is None:
+                distance_to_food = k
+            k += 1
+        
+        wall_sensor = 1 / (distance_to_wall + 1)
+        body_sensor = 1 / (distance_to_snake_body + 1) if distance_to_snake_body else 0
+        food_sensor = 1 / (distance_to_food + 1) if distance_to_food else 0
+        state.extend([wall_sensor, body_sensor, food_sensor])
+    
+    heading_directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+    heading_index = heading_directions.index(snake.direction)
+    heading_one_hot = [0] * 4
+    heading_one_hot[heading_index] = 1
+    state.extend(heading_one_hot)
+    
     return state
 
 def play_ai(bot_mover, max_steps=MAX_STEPS, max_no_food_steps=MAX_NO_FOOD_STEPS, watch=False):
     """
-    Runs a single game simulation using the provided bot_mover function.
-    
-    The simulation terminates if:
-      - The game ends (collision),
-      - The maximum number of steps is reached, or
-      - Too many consecutive steps occur without eating food.
-    
-    If 'watch' is True, we:
-      - Render the game each frame.
-      - Limit the frame rate (default ~x FPS).
-      - Show a "Game Over" screen at the end.
-    
-    Returns the final score (number of foods eaten) as the fitness measure.
+    Runs a single game simulation with the given bot_mover.
+    Returns the score (foods eaten).
     """
     game_instance = game.Game()
-    clock = None
-    if watch:
-        clock = pygame.time.Clock()
+    clock = pygame.time.Clock() if watch else None
 
     steps = 0
     no_food_steps = 0
@@ -111,7 +95,6 @@ def play_ai(bot_mover, max_steps=MAX_STEPS, max_no_food_steps=MAX_NO_FOOD_STEPS,
 
     while (not game_instance.game_over and steps < max_steps 
            and no_food_steps < max_no_food_steps):
-        # If watch=True, process events so the window remains responsive.
         if watch:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -122,7 +105,7 @@ def play_ai(bot_mover, max_steps=MAX_STEPS, max_no_food_steps=MAX_NO_FOOD_STEPS,
 
         if watch:
             game_instance.draw()
-            clock.tick(360)  # change fps here
+            clock.tick(10)  # 10 FPS when watching
 
         steps += 1
         if game_instance.score > current_score:
@@ -131,7 +114,6 @@ def play_ai(bot_mover, max_steps=MAX_STEPS, max_no_food_steps=MAX_NO_FOOD_STEPS,
         else:
             no_food_steps += 1
 
-    # When the loop ends, optionally show the game over screen.
     if watch:
         game_instance.show_game_over()
 
@@ -139,10 +121,11 @@ def play_ai(bot_mover, max_steps=MAX_STEPS, max_no_food_steps=MAX_NO_FOOD_STEPS,
 
 def train_generation(genomes, config, watch=False):
     """
-    Evaluates each genome by averaging its performance over multiple game simulations.
-    Also saves a checkpoint if a new highest fitness is achieved.
+    Evaluates genomes sequentially, averaging scores over PLAYS_PER_BOT runs.
+    Tracks and prints the best single-run score per generation.
     """
     global best_fitness
+    generation_best_max_score = 0
 
     for genome_id, genome in genomes:
         genome.fitness = 0
@@ -150,51 +133,48 @@ def train_generation(genomes, config, watch=False):
             net = neat.nn.FeedForwardNetwork.create(genome, config)
             mover = bot_mover_maker(net)
             total_score = 0
+            genome_max_score = 0
             for _ in range(PLAYS_PER_BOT):
-                total_score += play_ai(mover, watch=watch)
+                score = play_ai(mover, watch=watch)
+                total_score += score
+                genome_max_score = max(genome_max_score, score)
             genome.fitness = total_score / PLAYS_PER_BOT
+            generation_best_max_score = max(generation_best_max_score, genome_max_score)
         except Exception as e:
             print(f"Error evaluating genome {genome_id}: {e}")
             genome.fitness = -1
 
-    # Find best genome in this generation.
-    best_genome_in_generation = max(genomes, key=lambda x: x[1].fitness)[1]
-    if best_genome_in_generation.fitness > best_fitness:
-        best_fitness = best_genome_in_generation.fitness
+    best_genome = max(genomes, key=lambda x: x[1].fitness)[1]
+    if best_genome.fitness > best_fitness:
+        best_fitness = best_genome.fitness
         with open('best_model_checkpoint.pkl', 'wb') as f:
-            pickle.dump(best_genome_in_generation, f)
+            pickle.dump(best_genome, f)
         print(f"New checkpoint saved with fitness {best_fitness}")
+
+    print(f"Generation best single-run score: {generation_best_max_score}")
+
+def eval_genome(genome, config):
+    net = neat.nn.FeedForwardNetwork.create(genome, config)
+    mover = bot_mover_maker(net)
+    return play_ai(mover, watch=False)
+
 
 def run_neat(config_file, generations=1000, use_parallel=False, watch=False):
     """
-    Sets up and runs the NEAT algorithm using the provided configuration file.
-    
-    Parameters:
-      - config_file: path to the NEAT configuration file.
-      - generations: maximum number of generations to run.
-      - use_parallel: if True and visuals are disabled, use parallel evaluation.
-      - watch: if True, we slow training down (~10 FPS) so you can watch the AI learn.
+    Runs the NEAT algorithm with the specified settings.
     """
-    config = neat.config.Config(neat.DefaultGenome,
-                                neat.DefaultReproduction,
-                                neat.DefaultSpeciesSet,
-                                neat.DefaultStagnation,
-                                config_file)
+    config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                         neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                         config_file)
     
     p = neat.Population(config)
     p.add_reporter(neat.StdOutReporter(True))
-    stats = neat.StatisticsReporter()
-    p.add_reporter(stats)
+    p.add_reporter(neat.StatisticsReporter())
     p.add_reporter(neat.Checkpointer(50))
     
-    # If watch=True, we won't do parallel evaluation (it doesn't make sense to see multiple snakes).
     if use_parallel and not watch:
-        import multiprocessing
-        def eval_genome(genome, config):
-            net = neat.nn.FeedForwardNetwork.create(genome, config)
-            mover = bot_mover_maker(net)
-            return play_ai(mover, watch=False)  # No visuals in parallel mode
-        pe = neat.ParallelEvaluator(multiprocessing.cpu_count(), eval_genome)
+        from multiprocessing import cpu_count
+        pe = neat.ParallelEvaluator(cpu_count(), eval_genome)
         winner = p.run(pe.evaluate, generations)
     else:
         winner = p.run(lambda gs, c: train_generation(gs, c, watch=watch), generations)
@@ -204,25 +184,18 @@ def run_neat(config_file, generations=1000, use_parallel=False, watch=False):
     with open('best_config.pkl', 'wb') as f:
         pickle.dump(config, f)
     
-    print("\nBest genome:\n{}".format(winner))
+    print(f"\nBest genome:\n{winner}")
 
 def parse_args():
-    """
-    Parses command-line arguments.
-    Use --no-watch to disable visuals (default is to watch the simulation).
-    """
-    parser = argparse.ArgumentParser(description="Train a Snake bot using NEAT and watch it learn.")
-    parser.add_argument('--config', type=str, default='config-nn.txt',
-                        help="Path to the NEAT configuration file.")
-    parser.add_argument('--generations', type=int, default=1000,
-                        help="Number of generations to run.")
-    parser.add_argument('--parallel', action='store_true',
-                        help="Use parallel evaluation (disabled if visuals are on).")
-    parser.add_argument('--no-watch', dest='watch', action='store_false',
-                        help="Disable rendering of the simulation.")
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(description="Train a Snake bot with NEAT.")
+    parser.add_argument('--config', type=str, default='config-nn.txt')
+    parser.add_argument('--generations', type=int, default=1000)
+    parser.add_argument('--parallel', action='store_true')
+    parser.add_argument('--no-watch', dest='watch', action='store_false')
     parser.set_defaults(watch=True)
     return parser.parse_args()
 
 if __name__ == '__main__':
     args = parse_args()
-    run_neat(args.config, generations=args.generations, use_parallel=args.parallel, watch=args.watch)
+    run_neat(args.config, args.generations, args.parallel, args.watch)
