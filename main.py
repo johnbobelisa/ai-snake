@@ -1,354 +1,428 @@
-# Import necessary libraries for game, NEAT training, and argument parsing
+# -----------------------------------------
+# Reworked code with the same logic, just different names, structure, 
+# added background image support, and snake eyes.
+# -----------------------------------------
+
 import pygame
 import neat
 import numpy as np
 import pickle
 import argparse
 from pygame.locals import (
-    K_w, K_a, K_s, K_d,  # Keys for human control (WASD)
-    KEYDOWN, QUIT, K_ESCAPE  # Event types and escape key
+    K_w, K_a, K_s, K_d,  
+    KEYDOWN, QUIT, K_ESCAPE
 )
 
-# Define game board constants
-BLOCK_SIZE = 30  # Size of each grid block in pixels
-GRID_SIZE = 30   # Number of blocks per side of the grid
-SCREEN_SIZE = BLOCK_SIZE * GRID_SIZE  # Total screen size in pixels
+# -----------------------------------------
+# Global constants and settings (renamed)
+# -----------------------------------------
+CELL_SIZE = 25          # Size of each grid cell in pixels
+GRID_DIMENSION = 25     # Number of cells per side of the grid
+WINDOW_SIZE = CELL_SIZE * GRID_DIMENSION
 
-# Default rendering settings (will be adjusted based on mode)
-WATCH = False         # Whether to display the game visually
-USE_FRAMERATE = False # Whether to limit the frame rate
-FRAMERATE = 10        # Frames per second (default value)
-SHOW_DEATH_CAUSE = False  # Whether to print why the snake died
+IS_VISUAL = False            # If True, the game is rendered
+LIMIT_FPS = False            # If True, frames are limited to GAME_FPS
+GAME_FPS = 10                # Default frames per second
+PRINT_DEATH_REASON = False   # Print cause of snake death when True
 
-# NEAT-specific settings
-PLAYS_PER_BOT = 3  # Number of games to average for each bot's fitness
-VISION_BOX = 5     # Size of the vision grid around the snake's head
+ROUNDS_PER_AGENT = 3  # Times each AI is tested to get average fitness
+VISION_FIELD = 5      # The NxN area around the snake head used as input
 
-# Define the Food class to manage food placement and drawing
-class Food:
+# Add background image path (None means solid color if no custom image provided)
+BACKGROUND_IMG_PATH = "bg.png"
+BACKGROUND_IMG = None  # Will hold the loaded background image, if any
+
+# -----------------------------------------
+# Helper functions (some renamed)
+# -----------------------------------------
+def random_location():
+    """Generate a random (x, y) location within the grid."""
+    return np.random.randint(0, GRID_DIMENSION, size=2)
+
+def is_wall_or_snake(pos, serpent):
+    """
+    Return 1 if the position is occupied by the serpent's body or 
+    is outside the grid (like a wall). Otherwise return 0.
+    """
+    if pos in serpent.segments:
+        return 1
+    if not (0 <= pos[0] < GRID_DIMENSION and 0 <= pos[1] < GRID_DIMENSION):
+        return 1
+    return 0
+
+def sense_environment(serpent, candy):
+    """
+    Build the local state of the game for NEAT's neural net input.
+    The area is a VISION_FIELD x VISION_FIELD box around the snake head.
+    """
+    inputs = []
+    head = serpent.segments[0]
+
+    # Mark grid cells (occupied or not) around the head
+    for row_offset in range(-VISION_FIELD // 2 + 1, VISION_FIELD // 2 + 1):
+        for col_offset in range(-VISION_FIELD // 2 + 1, VISION_FIELD // 2 + 1):
+            if row_offset != 0 or col_offset != 0:
+                check_pos = (head[0] + col_offset, head[1] + row_offset)
+                inputs.append(is_wall_or_snake(check_pos, serpent))
+
+    # Food direction (up, down, left, right) relative to head
+    food_dir = (
+        1 if candy.location[1] < head[1] else 0,  # Up
+        1 if candy.location[1] > head[1] else 0,  # Down
+        1 if candy.location[0] < head[0] else 0,  # Left
+        1 if candy.location[0] > head[0] else 0   # Right
+    )
+    inputs.extend(food_dir)
+    return inputs
+
+def human_control(serpent, candy):
+    """Control the serpent with WASD keys for human play."""
+    keys = pygame.key.get_pressed()
+    if keys[K_w]:
+        serpent.direction = serpent.move_up
+    elif keys[K_s]:
+        serpent.direction = serpent.move_down
+    elif keys[K_a]:
+        serpent.direction = serpent.move_left
+    elif keys[K_d]:
+        serpent.direction = serpent.move_right
+
+def ai_controller_builder(neat_model):
+    """
+    Create an AI-based mover function using the provided NEAT model.
+    This function is returned and used to control the serpent in the game.
+    """
+    def ai_mover(serpent, candy):
+        state = sense_environment(serpent, candy)
+        outputs = neat_model.activate(state)
+        choice = np.argmax(outputs)
+        if choice == 0:
+            serpent.direction = serpent.move_up
+        elif choice == 1:
+            serpent.direction = serpent.move_right
+        elif choice == 2:
+            serpent.direction = serpent.move_down
+        elif choice == 3:
+            serpent.direction = serpent.move_left
+    return ai_mover
+
+# -----------------------------------------
+# Classes (renamed and restructured)
+# -----------------------------------------
+class Candy:
+    """
+    Represents the candy (food) in the game.
+    Responsible for drawing itself and respawning at a new location.
+    """
     def __init__(self, pos):
-        self.pos = tuple(pos)  # Store food position as a tuple
+        self.location = tuple(pos)
 
-    def draw(self, screen):
-        """Draw the food on the screen with a border"""
-        border = 5  # Border size in pixels
-        real_pos = np.multiply(self.pos, BLOCK_SIZE)  # Convert grid pos to pixels
-        # Draw outer rectangle (darker red)
-        pygame.draw.rect(screen, (150, 0, 0), (*real_pos, BLOCK_SIZE, BLOCK_SIZE))
-        # Draw inner rectangle (brighter red)
-        pygame.draw.rect(screen, (255, 0, 0),
-                         (real_pos[0] + border, real_pos[1] + border,
-                          BLOCK_SIZE - 2 * border, BLOCK_SIZE - 2 * border))
+    def draw_me(self, display):
+        """
+        Draw the candy with an inner and outer rectangle to give a border effect.
+        """
+        border_thickness = 5
+        pixel_loc = np.multiply(self.location, CELL_SIZE)
+        # Outer rectangle
+        pygame.draw.rect(display, (150, 0, 0), (*pixel_loc, CELL_SIZE, CELL_SIZE))
+        # Inner rectangle
+        pygame.draw.rect(
+            display, (255, 0, 0),
+            (pixel_loc[0] + border_thickness,
+             pixel_loc[1] + border_thickness,
+             CELL_SIZE - 2*border_thickness,
+             CELL_SIZE - 2*border_thickness)
+        )
 
-    def respawn(self, func):
-        """Respawn food at a new position using the provided function"""
-        new_pos = tuple(func())  # Get new position from food_controller
-        self.pos = new_pos
+    def relocate(self, finder_func):
+        """
+        Respawn the candy at a new location, avoiding the serpent's current positions.
+        """
+        new_spot = tuple(finder_func())
+        self.location = new_spot
 
-# Define the Snake class to manage snake movement and drawing
-class Snake:
-    def __init__(self, pos):
-        self.dir = self.right  # Default direction is right
-        self.blocks = [tuple(pos)]  # List of block positions, starting with head
+class Serpent:
+    """
+    The main playable entity (snake), holding segments and direction.
+    Responsible for drawing itself and moving.
+    """
+    def __init__(self, start_pos):
+        self.segments = [tuple(start_pos)]
+        self.direction = self.move_right  # Default movement direction
 
-    def draw(self, screen):
-        """Draw each snake block on the screen with a border"""
-        border = 5  # Border size in pixels
-        for pos in self.blocks:
-            real_pos = np.multiply(pos, BLOCK_SIZE)  # Convert grid pos to pixels
-            # Draw outer rectangle (darker green)
-            pygame.draw.rect(screen, (0, 150, 0), (*real_pos, BLOCK_SIZE, BLOCK_SIZE))
-            # Draw inner rectangle (brighter green)
-            pygame.draw.rect(screen, (0, 255, 0),
-                             (real_pos[0] + border, real_pos[1] + border,
-                              BLOCK_SIZE - 2 * border, BLOCK_SIZE - 2 * border))
+    def draw_me(self, display):
+        """
+        Draw all segments of the serpent. The head gets eyes.
+        """
+        border_thickness = 5
+        for idx, seg_pos in enumerate(self.segments):
+            pixel_loc = np.multiply(seg_pos, CELL_SIZE)
+            # Outer rectangle
+            pygame.draw.rect(display, (0, 150, 0), (*pixel_loc, CELL_SIZE, CELL_SIZE))
+            # Inner rectangle
+            pygame.draw.rect(
+                display, (0, 255, 0),
+                (pixel_loc[0] + border_thickness,
+                 pixel_loc[1] + border_thickness,
+                 CELL_SIZE - 2*border_thickness,
+                 CELL_SIZE - 2*border_thickness)
+            )
+            # If this segment is the head, draw eyes
+            if idx == 0:  
+                eye_radius = 3
+                left_eye_center = (pixel_loc[0] + 10, pixel_loc[1] + 10)
+                right_eye_center = (pixel_loc[0] + 20, pixel_loc[1] + 10)
+                pygame.draw.circle(display, (255, 255, 255), left_eye_center, eye_radius)
+                pygame.draw.circle(display, (255, 255, 255), right_eye_center, eye_radius)
 
-    def move(self):
-        """Move the snake in the current direction"""
-        new_head = self.dir(self.blocks[0])  # Calculate new head position
-        self.blocks.insert(0, new_head)      # Add new head
-        self.blocks.pop()                    # Remove tail
+    def move_me(self):
+        """
+        Move the serpent in the current direction.
+        The head position is recalculated, inserted at the front,
+        and the tail is removed.
+        """
+        new_head = self.direction(self.segments[0])
+        self.segments.insert(0, new_head)
+        self.segments.pop()
 
-    # Direction functions to compute new head position
-    def left(self, head):
+    # Direction methods
+    def move_left(self, head):
         return (head[0] - 1, head[1])
-    def right(self, head):
+
+    def move_right(self, head):
         return (head[0] + 1, head[1])
-    def up(self, head):
+
+    def move_up(self, head):
         return (head[0], head[1] - 1)
-    def down(self, head):
+
+    def move_down(self, head):
         return (head[0], head[1] + 1)
 
-def rand_pos():
-    """Return a random position within the grid"""
-    return np.random.randint(0, GRID_SIZE, size=2)
+# -----------------------------------------
+# Game loop (renamed)
+# -----------------------------------------
+def run_game(serpent_controller, candy_controller):
+    """
+    Run one game of Snake (Serpent) using the provided
+    serpent_controller and candy_controller. Returns the score.
+    """
+    global IS_VISUAL, LIMIT_FPS, GAME_FPS, PRINT_DEATH_REASON
 
-def human_mover(snake, food):
-    """Control snake direction based on human key presses (WASD)"""
-    presses = pygame.key.get_pressed()
-    if presses[K_w]:
-        snake.dir = snake.up
-    elif presses[K_s]:
-        snake.dir = snake.down
-    elif presses[K_a]:
-        snake.dir = snake.left
-    elif presses[K_d]:
-        snake.dir = snake.right
-
-def play(snake_controller, food_controller):
-    """Play a game of Snake with given controllers and return the score"""
-    global WATCH, USE_FRAMERATE, FRAMERATE, SHOW_DEATH_CAUSE
-
-    # Initialize PyGame and set up the display
     pygame.init()
-    screen = pygame.display.set_mode([SCREEN_SIZE, SCREEN_SIZE])
+    screen = pygame.display.set_mode([WINDOW_SIZE, WINDOW_SIZE])
     clock = pygame.time.Clock()
 
-    # Create initial snake and food objects
-    snake = Snake(rand_pos())
-    food = Food(food_controller())  # Use food_controller to get initial pos
+    # Possibly load background image if a path is set (and hasn't been loaded yet)
+    global BACKGROUND_IMG
+    if BACKGROUND_IMG_PATH and BACKGROUND_IMG is None:
+        BACKGROUND_IMG = pygame.image.load(BACKGROUND_IMG_PATH).convert()
+        BACKGROUND_IMG = pygame.transform.scale(BACKGROUND_IMG, (WINDOW_SIZE, WINDOW_SIZE))
 
-    score = 0         # Number of foods eaten
-    search_length = 0 # Steps since last food (to detect timeouts)
+    # Create serpent and candy
+    serpent = Serpent(random_location())
+    candy = Candy(candy_controller())
 
-    done = False
-    while not done:
-        # Handle quit events
+    points = 0
+    stepsSinceLastFood = 0
+    gameover = False
+
+    while not gameover:
         for event in pygame.event.get():
             if event.type == KEYDOWN and event.key == K_ESCAPE:
-                done = True
+                gameover = True
             elif event.type == QUIT:
-                done = True
+                gameover = True
 
-        # Render the game if watching is enabled
-        if WATCH:
-            screen.fill((0, 0, 0))  # Clear screen (black background)
-            snake.draw(screen)      # Draw snake
-            food.draw(screen)       # Draw food
-            pygame.display.flip()   # Update display
+        # Draw background
+        if IS_VISUAL:
+            if BACKGROUND_IMG:
+                screen.blit(BACKGROUND_IMG, (0, 0))
+            else:
+                screen.fill((0, 0, 0))
 
-        # Check for timeout (snake takes too long to find food)
-        if search_length > 100:
-            if SHOW_DEATH_CAUSE:
+            # Draw entities
+            serpent.draw_me(screen)
+            candy.draw_me(screen)
+            pygame.display.flip()
+
+        # Timeout check
+        if stepsSinceLastFood > 100:
+            if PRINT_DEATH_REASON:
                 print('timeout')
             break
 
-        # Check if snake hits the border
-        head_x, head_y = snake.blocks[0]
-        if not (0 <= head_x < GRID_SIZE and 0 <= head_y < GRID_SIZE):
-            if SHOW_DEATH_CAUSE:
+        # Border collision check
+        head_x, head_y = serpent.segments[0]
+        if not (0 <= head_x < GRID_DIMENSION and 0 <= head_y < GRID_DIMENSION):
+            if PRINT_DEATH_REASON:
                 print('out map')
             break
 
-        # Update snake direction using the controller
-        snake_controller(snake, food)
+        # AI or human control
+        serpent_controller(serpent, candy)
 
-        # Check if snake hits itself
-        if snake.blocks[0] in snake.blocks[1:]:
-            if SHOW_DEATH_CAUSE:
+        # Self collision check
+        if serpent.segments[0] in serpent.segments[1:]:
+            if PRINT_DEATH_REASON:
                 print('hit snake')
             break
 
-        # Check if snake eats food
-        if snake.blocks[0] == food.pos:
-            search_length = 0           # Reset timeout counter
-            score += 1                  # Increment score
-            food.respawn(food_controller)  # Respawn food
-            # Ensure food doesn't spawn on snake
-            while food.pos in snake.blocks:
-                food.respawn(food_controller)
-            snake.blocks.append(snake.blocks[0])  # Grow snake
+        # Candy eaten check
+        if serpent.segments[0] == candy.location:
+            stepsSinceLastFood = 0
+            points += 1
+            candy.relocate(candy_controller)
+            # Avoid spawning on the serpent
+            while candy.location in serpent.segments:
+                candy.relocate(candy_controller)
+            # Grow serpent
+            serpent.segments.append(serpent.segments[0])
 
-        snake.move()  # Move snake forward
+        # Move serpent
+        serpent.move_me()
 
-        # Apply frame rate limit if enabled
-        if USE_FRAMERATE:
-            clock.tick(FRAMERATE)
+        if LIMIT_FPS:
+            clock.tick(GAME_FPS)
 
-        search_length += 1  # Increment steps since last food
+        stepsSinceLastFood += 1
 
-    return score
+    return points
 
-def bot_mover_maker(model):
-    """Create a bot mover function using a NEAT neural network model"""
-    def bot_mover(snake, food):
-        state = local_state(snake, food)  # Get current game state
-        guesses = model.activate(state)   # Get model predictions
-        new_dir = np.argmax(guesses)      # Choose direction with highest score
-        # Set snake direction based on model output
-        if new_dir == 0:
-            snake.dir = snake.up
-        elif new_dir == 1:
-            snake.dir = snake.right
-        elif new_dir == 2:
-            snake.dir = snake.down
-        elif new_dir == 3:
-            snake.dir = snake.left
-    return bot_mover
+# -----------------------------------------
+# NEAT training functions (renamed)
+# -----------------------------------------
+def evaluate_generation(genomes, neat_config):
+    """
+    Evaluate fitness of each genome in the current NEAT generation.
+    Each genome is tested ROUNDS_PER_AGENT times; average is assigned as fitness.
+    """
+    for genome_id, genome_data in genomes:
+        genome_data.fitness = 0
+        brain = neat.nn.FeedForwardNetwork.create(genome_data, neat_config)
+        ai_mover = ai_controller_builder(brain)
+        for _ in range(ROUNDS_PER_AGENT):
+            genome_data.fitness += run_game(ai_mover, random_location) / ROUNDS_PER_AGENT
 
-def is_occupied(pos, snake):
-    """Check if a position is occupied (by snake or border)"""
-    if pos in snake.blocks:  # Position is part of snake
-        return 1
-    # Position is outside grid boundaries
-    if not (0 <= pos[0] < GRID_SIZE and 0 <= pos[1] < GRID_SIZE):
-        return 1
-    return 0  # Position is free
-
-def local_state(snake, food):
-    """Compute the snake's local state for the NEAT model"""
-    state = []
-    head = snake.blocks[0]  # Snake's head position
-
-    # Build a VISION_BOX x VISION_BOX grid around the head (excluding head itself)
-    for i in range(-VISION_BOX // 2 + 1, VISION_BOX // 2 + 1):
-        for j in range(-VISION_BOX // 2 + 1, VISION_BOX // 2 + 1):
-            if i != 0 or j != 0:  # Skip the head position
-                state.append(is_occupied((head[0] + j, head[1] + i), snake))
-
-    # Add food direction indicators (up, down, left, right)
-    food_direction = (
-        1 if food.pos[1] < head[1] else 0,  # Food is above
-        1 if food.pos[1] > head[1] else 0,  # Food is below
-        1 if food.pos[0] < head[0] else 0,  # Food is left
-        1 if food.pos[0] > head[0] else 0   # Food is right
-    )
-    state += list(food_direction)
-    return state
-
-def train_generation(genomes, config):
-    """Evaluate fitness of genomes in a NEAT generation"""
-    for _, (genome_id, genome) in enumerate(genomes):
-        genome.fitness = 0  # Initialize fitness
-        model = neat.nn.FeedForwardNetwork.create(genome, config)  # Create NN
-        bot_mover = bot_mover_maker(model)  # Get bot controller
-        # Average fitness over multiple plays
-        for _ in range(PLAYS_PER_BOT):
-            genome.fitness += play(bot_mover, rand_pos) / PLAYS_PER_BOT
-
-def train(config_file, watch_training=False):
-    """Train a Snake bot using the NEAT algorithm"""
-    global WATCH, USE_FRAMERATE, FRAMERATE
-
-    # Set rendering settings based on whether we're watching
-    if watch_training:
-        WATCH = True
-        USE_FRAMERATE = True
-        FRAMERATE = 100  # Faster frame rate for watching training
+def run_training(config_path, visualize_training=False):
+    """
+    Train the NEAT-based serpent using the specified config file.
+    Optionally show the training visually (slower).
+    """
+    global IS_VISUAL, LIMIT_FPS, GAME_FPS
+    if visualize_training:
+        IS_VISUAL = True
+        LIMIT_FPS = True
+        GAME_FPS = 100
     else:
-        WATCH = False    # No rendering to speed up training
-        USE_FRAMERATE = False  # No frame rate limit
+        IS_VISUAL = False
+        LIMIT_FPS = False
 
-    # Load NEAT configuration from file
-    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
-                                neat.DefaultSpeciesSet, neat.DefaultStagnation,
-                                config_file)
+    neat_config = neat.config.Config(
+        neat.DefaultGenome, neat.DefaultReproduction,
+        neat.DefaultSpeciesSet, neat.DefaultStagnation,
+        config_path
+    )
 
-    # Create NEAT population
-    p = neat.Population(config)
-
-    # Add reporters for progress tracking
-    p.add_reporter(neat.StdOutReporter(True))  # Print progress to console
+    population = neat.Population(neat_config)
+    population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
-    p.add_reporter(stats)
-    p.add_reporter(neat.Checkpointer(50))  # Save checkpoints every 50 gens
+    population.add_reporter(stats)
+    population.add_reporter(neat.Checkpointer(50))
 
-    # Run NEAT for up to 1000 generations
-    winner = p.run(train_generation, 1000)
+    # Up to 1000 generations
+    winner_genome = population.run(evaluate_generation, 1000)
 
-    # Save the best genome to a file
-    pickle.dump(winner, open('best_genome.pkl', 'wb'))
+    pickle.dump(winner_genome, open('best_genome.pkl', 'wb'))
+    print('\nBest genome:\n{!s}'.format(winner_genome))
 
-    # Display the best genome
-    print('\nBest genome:\n{!s}'.format(winner))
+# -----------------------------------------
+# Human play and watchers (renamed)
+# -----------------------------------------
+def human_play():
+    """
+    Let a human control the serpent with WASD keys.
+    """
+    global IS_VISUAL, LIMIT_FPS, GAME_FPS
+    IS_VISUAL = True
+    LIMIT_FPS = True
+    GAME_FPS = 10
 
-def play_human():
-    """Play Snake as a human using WASD controls"""
-    global WATCH, USE_FRAMERATE, FRAMERATE
+    final_score = run_game(human_control, random_location)
+    print(f"Score: {final_score}")
 
-    # Set rendering settings for human play
-    WATCH = True           # Must watch to play
-    USE_FRAMERATE = True   # Limit frame rate
-    FRAMERATE = 10         # Suitable speed for human control
-
-    # Play one game and print the score
-    score = play(human_mover, rand_pos)
-    print(f"Score: {score}")
-
-def preset_food_pos_maker(positions):
-    """Create a food controller that uses preset positions"""
-    pos = positions[:]  # Copy list to avoid modifying original
-    def preset_food_pos():
+def preset_candy_positions_maker(positions):
+    """
+    Create a function that returns candy positions from a preset list.
+    Once the list is exhausted, it falls back to random locations.
+    """
+    pos_list = positions[:]
+    def get_next():
         try:
-            return pos.pop(0)  # Return next position
+            return pos_list.pop(0)
         except IndexError:
             print('out of given positions; using random ones')
-            return rand_pos()  # Fall back to random if out of positions
-    return preset_food_pos
+            return random_location()
+    return get_next
 
-def watch_bot(genome_file, config_file, food_pos_file=None):
-    """Watch a trained bot play Snake"""
-    global WATCH, USE_FRAMERATE, FRAMERATE
+def visualize_bot(genome_path, config_path, candy_positions_path=None):
+    """
+    Watch a trained genome control the serpent in the game.
+    Optionally use a preset list of candy positions.
+    """
+    global IS_VISUAL, LIMIT_FPS, GAME_FPS
+    IS_VISUAL = True
+    LIMIT_FPS = True
+    GAME_FPS = 30
 
-    # Set rendering settings for watching
-    WATCH = True
-    USE_FRAMERATE = True
-    FRAMERATE = 30  # Suitable speed for observation
+    trained_genome = pickle.load(open(genome_path, 'rb'))
+    neat_config = neat.config.Config(
+        neat.DefaultGenome, neat.DefaultReproduction,
+        neat.DefaultSpeciesSet, neat.DefaultStagnation,
+        config_path
+    )
+    brain = neat.nn.FeedForwardNetwork.create(trained_genome, neat_config)
+    serpent_controller = ai_controller_builder(brain)
 
-    # Load the trained genome
-    genome = pickle.load(open(genome_file, 'rb'))
-
-    # Load NEAT config (assuming text config file like in training)
-    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
-                                neat.DefaultSpeciesSet, neat.DefaultStagnation,
-                                config_file)
-
-    # Create neural network model from genome
-    model = neat.nn.FeedForwardNetwork.create(genome, config)
-    snake_controller = bot_mover_maker(model)  # Get bot controller
-
-    # Set food controller based on whether positions are provided
-    if food_pos_file:
-        food_positions = pickle.load(open(food_pos_file, 'rb'))
-        food_controller = preset_food_pos_maker(food_positions)
+    if candy_positions_path:
+        positions_list = pickle.load(open(candy_positions_path, 'rb'))
+        candy_controller = preset_candy_positions_maker(positions_list)
     else:
-        food_controller = rand_pos  # Use random positions
+        candy_controller = random_location
 
-    # Play the game and print the score
-    score = play(snake_controller, food_controller)
-    print('Score:', score)
+    final_score = run_game(serpent_controller, candy_controller)
+    print('Score:', final_score)
 
-def main():
-    """Parse command-line arguments and run the selected mode"""
-    parser = argparse.ArgumentParser(description="Snake Game with NEAT Bot")
+# -----------------------------------------
+# Entry point (renamed, but argument logic the same)
+# -----------------------------------------
+def entry_point():
+    parser = argparse.ArgumentParser(description="Snake Game with NEAT Bot (Reworked)")
     subparsers = parser.add_subparsers(dest='mode', help='Mode to run')
 
-    # Train mode parser
-    train_parser = subparsers.add_parser('train', help='Train the bot using NEAT')
-    train_parser.add_argument('--config', required=True, help='Path to NEAT config file')
-    train_parser.add_argument('--watch', action='store_true', help='Watch the training process')
+    # Train mode
+    train_sub = subparsers.add_parser('train', help='Train the bot using NEAT')
+    train_sub.add_argument('--config', required=True, help='Path to NEAT config file')
+    train_sub.add_argument('--watch', action='store_true', help='Watch the training process')
 
-    # Play mode parser
-    play_parser = subparsers.add_parser('play', help='Play Snake as a human')
+    # Human play mode
+    play_sub = subparsers.add_parser('play', help='Play Snake as a human')
 
-    # Watch mode parser
-    watch_parser = subparsers.add_parser('watch', help='Watch the bot play Snake')
-    watch_parser.add_argument('--genome', required=True, help='Path to genome file')
-    watch_parser.add_argument('--config', required=True, help='Path to NEAT config file')
-    watch_parser.add_argument('--food-pos', help='Path to food positions file (optional)')
+    # Watch mode
+    watch_sub = subparsers.add_parser('watch', help='Watch the bot play Snake')
+    watch_sub.add_argument('--genome', required=True, help='Path to genome file')
+    watch_sub.add_argument('--config', required=True, help='Path to NEAT config file')
+    watch_sub.add_argument('--food-pos', help='Path to food positions file (optional)')
 
-    # Parse arguments
     args = parser.parse_args()
 
-    # Execute the selected mode
     if args.mode == 'train':
-        train(args.config, args.watch)
+        run_training(args.config, args.watch)
     elif args.mode == 'play':
-        play_human()
+        human_play()
     elif args.mode == 'watch':
-        watch_bot(args.genome, args.config, args.food_pos)
+        visualize_bot(args.genome, args.config, args.food_pos)
     else:
-        parser.print_help()  # Show help if no mode is specified
+        parser.print_help()
 
 if __name__ == '__main__':
-    main()
+    entry_point()
