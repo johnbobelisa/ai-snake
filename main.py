@@ -39,31 +39,31 @@ def random_location():
     """Generate a random (x, y) location within the grid."""
     return np.random.randint(0, GRID_DIMENSION, size=2)
 
-def is_wall_or_snake(pos, serpent):
+def is_wall_or_snake(pos, snake):
     """
-    Return 1 if the position is occupied by the serpent's body or 
+    Return 1 if the position is occupied by the snake's body or 
     is outside the grid (like a wall). Otherwise return 0.
     """
-    if pos in serpent.segments:
+    if pos in snake.segments:
         return 1
     if not (0 <= pos[0] < GRID_DIMENSION and 0 <= pos[1] < GRID_DIMENSION):
         return 1
     return 0
 
-def sense_environment(serpent, candy):
+def sense_environment(snake, candy):
     """
     Build the local state of the game for NEAT's neural net input.
     The area is a VISION_FIELD x VISION_FIELD box around the snake head.
     """
     inputs = []
-    head = serpent.segments[0]
+    head = snake.segments[0]
 
     # Mark grid cells (occupied or not) around the head
     for row_offset in range(-VISION_FIELD // 2 + 1, VISION_FIELD // 2 + 1):
         for col_offset in range(-VISION_FIELD // 2 + 1, VISION_FIELD // 2 + 1):
             if row_offset != 0 or col_offset != 0:
                 check_pos = (head[0] + col_offset, head[1] + row_offset)
-                inputs.append(is_wall_or_snake(check_pos, serpent))
+                inputs.append(is_wall_or_snake(check_pos, snake))
 
     # Food direction (up, down, left, right) relative to head
     food_dir = (
@@ -75,35 +75,35 @@ def sense_environment(serpent, candy):
     inputs.extend(food_dir)
     return inputs
 
-def human_control(serpent, candy):
-    """Control the serpent with WASD keys for human play."""
+def human_control(snake, candy):
+    """Control the snake with WASD keys for human play."""
     keys = pygame.key.get_pressed()
     if keys[K_w]:
-        serpent.direction = serpent.move_up
+        snake.direction = snake.move_up
     elif keys[K_s]:
-        serpent.direction = serpent.move_down
+        snake.direction = snake.move_down
     elif keys[K_a]:
-        serpent.direction = serpent.move_left
+        snake.direction = snake.move_left
     elif keys[K_d]:
-        serpent.direction = serpent.move_right
+        snake.direction = snake.move_right
 
 def ai_controller_builder(neat_model):
     """
     Create an AI-based mover function using the provided NEAT model.
-    This function is returned and used to control the serpent in the game.
+    This function is returned and used to control the snake in the game.
     """
-    def ai_mover(serpent, candy):
-        state = sense_environment(serpent, candy)
+    def ai_mover(snake, candy):
+        state = sense_environment(snake, candy)
         outputs = neat_model.activate(state)
         choice = np.argmax(outputs)
         if choice == 0:
-            serpent.direction = serpent.move_up
+            snake.direction = snake.move_up
         elif choice == 1:
-            serpent.direction = serpent.move_right
+            snake.direction = snake.move_right
         elif choice == 2:
-            serpent.direction = serpent.move_down
+            snake.direction = snake.move_down
         elif choice == 3:
-            serpent.direction = serpent.move_left
+            snake.direction = snake.move_left
     return ai_mover
 
 # -----------------------------------------
@@ -136,12 +136,12 @@ class Candy:
 
     def relocate(self, finder_func):
         """
-        Respawn the candy at a new location, avoiding the serpent's current positions.
+        Respawn the candy at a new location, avoiding the snake's current positions.
         """
         new_spot = tuple(finder_func())
         self.location = new_spot
 
-class Serpent:
+class Snake:
     """
     The main playable entity (snake), holding segments and direction.
     Responsible for drawing itself and moving.
@@ -152,7 +152,7 @@ class Serpent:
 
     def draw_me(self, display):
         """
-        Draw all segments of the serpent. The head gets eyes.
+        Draw all segments of the snake. The head gets eyes.
         """
         border_thickness = 5
         for idx, seg_pos in enumerate(self.segments):
@@ -177,7 +177,7 @@ class Serpent:
 
     def move_me(self):
         """
-        Move the serpent in the current direction.
+        Move the snake in the current direction.
         The head position is recalculated, inserted at the front,
         and the tail is removed.
         """
@@ -201,10 +201,10 @@ class Serpent:
 # -----------------------------------------
 # Game loop (renamed)
 # -----------------------------------------
-def run_game(serpent_controller, candy_controller):
+def run_game(snake_controller, candy_controller):
     """
-    Run one game of Snake (Serpent) using the provided
-    serpent_controller and candy_controller. Returns the score.
+    Run one game of Snake (Snake) using the provided
+    snake_controller and candy_controller. Returns the score.
     """
     global IS_VISUAL, LIMIT_FPS, GAME_FPS, PRINT_DEATH_REASON
 
@@ -218,8 +218,8 @@ def run_game(serpent_controller, candy_controller):
         BACKGROUND_IMG = pygame.image.load(BACKGROUND_IMG_PATH).convert()
         BACKGROUND_IMG = pygame.transform.scale(BACKGROUND_IMG, (WINDOW_SIZE, WINDOW_SIZE))
 
-    # Create serpent and candy
-    serpent = Serpent(random_location())
+    # Create snake and candy
+    snake = Snake(random_location())
     candy = Candy(candy_controller())
 
     points = 0
@@ -241,7 +241,7 @@ def run_game(serpent_controller, candy_controller):
                 screen.fill((0, 0, 0))
 
             # Draw entities
-            serpent.draw_me(screen)
+            snake.draw_me(screen)
             candy.draw_me(screen)
             pygame.display.flip()
 
@@ -252,34 +252,34 @@ def run_game(serpent_controller, candy_controller):
             break
 
         # Border collision check
-        head_x, head_y = serpent.segments[0]
+        head_x, head_y = snake.segments[0]
         if not (0 <= head_x < GRID_DIMENSION and 0 <= head_y < GRID_DIMENSION):
             if PRINT_DEATH_REASON:
                 print('out map')
             break
 
         # AI or human control
-        serpent_controller(serpent, candy)
+        snake_controller(snake, candy)
 
         # Self collision check
-        if serpent.segments[0] in serpent.segments[1:]:
+        if snake.segments[0] in snake.segments[1:]:
             if PRINT_DEATH_REASON:
                 print('hit snake')
             break
 
         # Candy eaten check
-        if serpent.segments[0] == candy.location:
+        if snake.segments[0] == candy.location:
             stepsSinceLastFood = 0
             points += 1
             candy.relocate(candy_controller)
-            # Avoid spawning on the serpent
-            while candy.location in serpent.segments:
+            # Avoid spawning on the snake
+            while candy.location in snake.segments:
                 candy.relocate(candy_controller)
-            # Grow serpent
-            serpent.segments.append(serpent.segments[0])
+            # Grow snake
+            snake.segments.append(snake.segments[0])
 
-        # Move serpent
-        serpent.move_me()
+        # Move snake
+        snake.move_me()
 
         if LIMIT_FPS:
             clock.tick(GAME_FPS)
@@ -305,7 +305,7 @@ def evaluate_generation(genomes, neat_config):
 
 def run_training(config_path, visualize_training=False):
     """
-    Train the NEAT-based serpent using the specified config file.
+    Train the NEAT-based snake using the specified config file.
     Optionally show the training visually (slower).
     """
     global IS_VISUAL, LIMIT_FPS, GAME_FPS
@@ -340,7 +340,7 @@ def run_training(config_path, visualize_training=False):
 # -----------------------------------------
 def human_play():
     """
-    Let a human control the serpent with WASD keys.
+    Let a human control the snake with WASD keys.
     """
     global IS_VISUAL, LIMIT_FPS, GAME_FPS
     IS_VISUAL = True
@@ -366,7 +366,7 @@ def preset_candy_positions_maker(positions):
 
 def visualize_bot(genome_path, config_path, candy_positions_path=None):
     """
-    Watch a trained genome control the serpent in the game.
+    Watch a trained genome control the snake in the game.
     Optionally use a preset list of candy positions.
     """
     global IS_VISUAL, LIMIT_FPS, GAME_FPS
@@ -381,7 +381,7 @@ def visualize_bot(genome_path, config_path, candy_positions_path=None):
         config_path
     )
     brain = neat.nn.FeedForwardNetwork.create(trained_genome, neat_config)
-    serpent_controller = ai_controller_builder(brain)
+    snake_controller = ai_controller_builder(brain)
 
     if candy_positions_path:
         positions_list = pickle.load(open(candy_positions_path, 'rb'))
@@ -389,7 +389,7 @@ def visualize_bot(genome_path, config_path, candy_positions_path=None):
     else:
         candy_controller = random_location
 
-    final_score = run_game(serpent_controller, candy_controller)
+    final_score = run_game(snake_controller, candy_controller)
     print('Score:', final_score)
 
 # -----------------------------------------
