@@ -45,5 +45,3 @@ python main.py
 - `main.py`: Game implementation and NEAT integration
 - `config-feedforward.txt`: Neural network evolution parameters
 - `best_genome.pkl` & `best_config.pkl`: Trained AI model storage
-
-Credit to nglaze00 for the help!
