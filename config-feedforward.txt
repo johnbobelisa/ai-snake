@@ -6,9 +6,9 @@ reset_on_extinction   = True
 
 [DefaultGenome]
 # node activation options
-activation_default      = sigmoid
+activation_default      = tanh
 activation_mutate_rate  = 0.0
-activation_options      = sigmoid relu tanh
+activation_options      = tanh
 
 # node aggregation options
 aggregation_default     = sum
@@ -40,12 +40,12 @@ feed_forward            = True
 initial_connection      = full_direct
 
 # node add/remove rates
-node_add_prob           = 0.3
+node_add_prob           = 0.2
 node_delete_prob        = 0.2
 
 # network parameters
 num_hidden              = 18
-num_inputs              = 60
+num_inputs              = 28
 num_outputs             = 4
 
 # node response options
@@ -62,17 +62,17 @@ weight_init_mean        = 0.0
 weight_init_stdev       = 1.0
 weight_max_value        = 30
 weight_min_value        = -30
-weight_mutate_power     = 0.7
+weight_mutate_power     = 0.5
 weight_mutate_rate      = 0.8
 weight_replace_rate     = 0.1
 
 [DefaultSpeciesSet]
-compatibility_threshold = 2.0
+compatibility_threshold = 3.0
 
 [DefaultStagnation]
 species_fitness_func = max
 max_stagnation       = 50
-species_elitism      = 2
+species_elitism      = 0
 
 [DefaultReproduction]
 elitism            = 2
