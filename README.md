@@ -26,12 +26,6 @@ python main.py
 - **Hidden**: Evolves dynamically (initially 18 neurons)
 - **Output (4 neurons)**: Directional movement decisions
 
-## NEAT Configuration Highlights
-- **Evolution Strategy**: 100 genomes/generation, fitness based on food eaten
-- **Network**: Feed-forward with tanh activation
-- **Mutation Rates**: Balanced for exploration (connection add/delete: 0.5) and exploitation (weight mutation: 0.8)
-- **Species Management**: 3.0 compatibility threshold, 20% survival rate, 2 elites preserved
-
 ## Key Algorithms
 - **Vision System**: Converts local 5×5 grid and food position into neural inputs
 - **Fitness Evaluation**: Each genome plays 3 games, scores averaged
@@ -43,8 +37,6 @@ python main.py
 3. Group similar genomes into species
 4. Select top performers for reproduction with mutations
 5. Continue until fitness threshold (100) or 50 generations
-
-The AI progressively learns collision avoidance, efficient pathfinding, and spatial awareness through evolutionary pressure.
 
 ## File Structure
 
