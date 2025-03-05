@@ -12,7 +12,7 @@ Three gameplay modes:
 ## Setup
 
 ```
-pip install pygame neat-python numpy
+pip install -r requirements.txt
 python main.py
 ```
 
